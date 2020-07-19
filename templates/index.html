@@ -1,0 +1,323 @@
+<!DOCTYPE HTML>
+<html>
+  <head>
+    <title>watch with friends</title>
+    <script src="//cdnjs.cloudflare.com/ajax/libs/socket.io/2.2.0/socket.io.js" integrity="sha256-yr4fRk/GU1ehYJPAs8P4JlTgu0Hdsp4ZKrx8bDEDC3I=" crossorigin="anonymous"></script>
+    <link href="https://vjs.zencdn.net/7.8.3/video-js.css" rel="stylesheet" />
+    <script src="https://vjs.zencdn.net/7.8.3/video.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/webtorrent@latest/webtorrent.min.js"></script>
+    <script src="http://momentjs.com/downloads/moment.min.js"></script>
+
+    <style>
+      body {
+          margin: 0;
+      }
+      .video_container {
+          height: 100vh;
+          display: flex;
+          justify-content: center;
+          align-items: center;
+      }
+      #progressBar {
+          height: 5px;
+          width: 0%;
+          background-color: #35b44f;
+          transition: width .4s ease-in-out;
+      }
+      body.is-seed .show-seed {
+          display: inline;
+      }
+      body.is-seed .show-leech {
+          display: none;
+      }
+      .show-seed {
+          display: none;
+      }
+      #status code {
+          font-size: 90%;
+          font-weight: 700;
+          margin-left: 3px;
+          margin-right: 3px;
+          border-bottom: 1px dashed rgba(255,255,255,0.3);
+      }
+
+      .is-seed #hero {
+          background-color: #154820;
+          transition: .5s .5s background-color ease-in-out;
+      }
+      #hero {
+          background-color: #2a3749;
+      }
+      #status {
+          color: #fff;
+          font-size: 17px;
+          padding: 5px;
+      }
+      a:link, a:visited {
+          color: #30a247;
+          text-decoration: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="display">
+      <h5>Status: <div id="status">Disconnected</div></h5>
+      <h5>Latency: <div id="latency">0 ms</div></h5>
+    </div>
+    <form id="config" name="config" action="#">
+      <label for="magnet_link">magnet link:</label>
+      <input type="text" name="magnet_link" id="magnet_link" value="">
+      <label for="tolerance">tolerance:</label>
+      <input type="number" name="tolerance" id="tolerance" value="2000">
+      <input type="submit" value="Set Config">
+    </form>
+    <form id="torrent" name="torrent" action="#">
+      <input type="submit" value="Start Torrent">
+    </form>
+
+    <div id="hero">
+      <div id="progressBar"></div>
+      <!-- Statistics -->
+      <div id="status">
+        <div>
+          <span class="show-leech">Downloading </span>
+          <span class="show-seed">Seeding </span>
+          <span class="show-leech"> from </span>
+          <span class="show-seed"> to </span>
+          <code id="numPeers">0 peers</code>.
+        </div>
+        <div>
+          <code id="downloaded"></code>
+          of <code id="total"></code>
+          — <span id="remaining"></span><br/>
+          &#x2198;<code id="downloadSpeed">0 b/s</code>
+          / &#x2197;<code id="uploadSpeed">0 b/s</code>
+        </div>
+      </div>
+    </div>
+
+    <div id="video_container" class="video_container">
+      <video id="video" controls>
+      </video>
+    </div>
+  </body>
+  <script type="text/javascript" charset="utf-8">
+    const $ = document.querySelector.bind(document)
+    const $$ = document.querySelectorAll.bind(document)
+    const getForm = (target) => {
+        const form = new FormData(target)
+        const obj = {}
+        form.forEach((value, key) => {obj[key] = value})
+        return obj
+    }
+    const onSubmit = (selector, k) => {
+        $(selector).addEventListener('submit', k)
+    }
+
+    window.addEventListener("load", () => {
+        const client = new WebTorrent()
+        const socket = io('http://192.168.0.157:5000')
+
+        let status = 'none'
+        let isPlaying = false
+        let latency = 0
+        const videoTag = $('#video')
+
+        const setPlaying = (playing) => {
+            if (playing !== isPlaying) {
+                isPlaying = playing
+                if (playing) {
+                    console.log('server is playing')
+                    videoTag.play()
+                } else {
+                    console.log('server has paused')
+                    videoTag.pause()
+                }
+            }
+        }
+
+        const syncTime = (newTime, compensate) => {
+            const tolerance = $('#tolerance').value
+            const serverTime = newTime + latency / 1000
+            if (Math.abs(serverTime - videoTag.currentTime) > tolerance / 1000) {
+                console.log('desynced, seeking', serverTime)
+                if (compensate) {
+                    videoTag.currentTime = serverTime
+                } else {
+                    videoTag.currentTime = newTime
+                }
+            }
+        }
+
+        socket.on('connect', () => {
+            if (status === 'none') {
+                socket.emit('get_config')
+            }
+            $('#status').innerHTML = "Connected"
+        })
+
+        socket.on('server_status', (msg) => {
+            if (status === 'in_sync') {
+                setPlaying(msg.data.playing)
+                syncTime(msg.data.time, false)
+            }
+        })
+
+        socket.on('server_time', (msg) => {
+            if (status === 'in_sync') {
+                syncTime(msg.data.time, true)
+            }
+        })
+        
+        socket.on('server_config', (msg) => {
+            console.log(msg)
+            $('#magnet_link').value = msg.data.magnet_link
+            $('#tolerance').value = msg.data.tolerance
+        })
+
+        socket.on('pong', (v) => {
+            $('#latency').innerHTML = v + ' ms'
+            latency = v
+        })
+
+        socket.on('disconnect', () => {
+            $('#status').innerHTML = 'Disconnected'
+        })
+
+        onSubmit('#config', (event) => {
+            event.preventDefault()
+            socket.emit('set_config', {data: getForm(event.target)})
+        })
+
+        client.on('error', console.error.bind(console))
+
+        onSubmit('#torrent', (event) => {
+            event.preventDefault()
+
+            // HTML elements
+            var $body = document.body
+            var $progressBar = document.querySelector('#progressBar')
+            var $numPeers = document.querySelector('#numPeers')
+            var $downloaded = document.querySelector('#downloaded')
+            var $total = document.querySelector('#total')
+            var $remaining = document.querySelector('#remaining')
+            var $uploadSpeed = document.querySelector('#uploadSpeed')
+            var $downloadSpeed = document.querySelector('#downloadSpeed')
+
+            client.add($('#magnet_link').value, (torrent) => {
+                const mp4File = torrent.files.find(file => file.name.endsWith('.mp4'))
+                const webmFile = torrent.files.find(file => file.name.endsWith('.webm'))
+                // we can pretent mkv is webm and see if it works
+                const mkvFile = torrent.files.find(file => file.name.endsWith('.mkv'))
+
+                console.log(torrent)
+
+                if (mp4File) {
+                    mp4File.renderTo('#video')
+                } else if (webmFile) {
+                    webmFile.renderTo('#video')
+                } else if (mkvFile) {
+                    mkvFile.renderTo('#video')
+                }
+
+                const emitUpdate = (fromEvent) => {
+                    fromEvent = !!fromEvent
+                    if (status === 'in_sync') {
+                        socket.emit('update', {data: {'time': videoTag.currentTime, 'playing': isPlaying, 'from_event': fromEvent}})
+                    }
+                }
+
+                videoTag.onplaying = (event) => {
+                    if (status === 'idle') {
+                        isPlaying = true
+                        status = 'starting'
+                        socket.emit('start', {}, (updated) => {
+                            // update player
+                            videoTag.currentTime = updated.data.time + latency / 1000
+                            setPlaying(updated.data.playing)
+                            status = 'in_sync'
+                        })
+                    } else if (!isPlaying) {
+                        isPlaying = true
+                        emitUpdate(true)
+                    }
+                }
+
+                window.setInterval(emitUpdate, 300)
+
+                videoTag.onloadeddata = (event) => {
+                    // client ready to play
+                    status = 'idle'
+                }
+
+                videoTag.onpause = (event) => {
+                    // client paused
+                    if (isPlaying) {
+                        isPlaying = false
+                        emitUpdate(true)
+                    }
+                }
+
+                videoTag.onstalled = (event) => {
+                    // client buffering
+                    console.log('playback stalled')
+                    if (isPlaying) {
+                        isPlaying = false
+                        videoTag.pause()
+                        emitUpdate(true)
+                    }
+                }
+
+                videoTag.seeked = (event) => {
+                    console.log('seeked')
+                    emitUpdate(true)
+                }
+
+                // copy pasta from WebTorrent homepage
+                setInterval(onProgress, 500)
+                onProgress()
+
+                // Statistics
+                function onProgress () {
+                    // Peers
+                    $numPeers.innerHTML = torrent.numPeers + (torrent.numPeers === 1 ? ' peer' : ' peers')
+
+                    // Progress
+                    var percent = Math.round(torrent.progress * 100 * 100) / 100
+                    $progressBar.style.width = percent + '%'
+                    $downloaded.innerHTML = prettyBytes(torrent.downloaded)
+                    $total.innerHTML = prettyBytes(torrent.length)
+
+                    // Remaining time
+                    var remaining
+                    if (torrent.done) {
+                        remaining = 'Done.'
+                    } else {
+                        remaining = moment.duration(torrent.timeRemaining / 1000, 'seconds').humanize()
+                        remaining = remaining[0].toUpperCase() + remaining.substring(1) + ' remaining.'
+                    }
+                    $remaining.innerHTML = remaining
+
+                    // Speed rates
+                    $downloadSpeed.innerHTML = prettyBytes(torrent.downloadSpeed) + '/s'
+                    $uploadSpeed.innerHTML = prettyBytes(torrent.uploadSpeed) + '/s'
+                }
+                function onDone () {
+                    $body.className += ' is-seed'
+                    onProgress()
+                }
+                // Human readable bytes util
+                function prettyBytes(num) {
+                    var exponent, unit, neg = num < 0, units = ['B', 'kB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB']
+                    if (neg) num = -num
+                    if (num < 1) return (neg ? '-' : '') + num + ' B'
+                    exponent = Math.min(Math.floor(Math.log(num) / Math.log(1000)), units.length - 1)
+                    num = Number((num / Math.pow(1000, exponent)).toFixed(2))
+                    unit = units[exponent]
+                    return (neg ? '-' : '') + num + ' ' + unit
+                }
+            })
+        })
+    })
+  </script>
+</html>
